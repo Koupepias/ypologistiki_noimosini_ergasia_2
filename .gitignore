@@ -1,0 +1,7 @@
+.venv
+*.png
+*.csv
+*.~lock
+*.zip
+*.tar.gz
+*.txt
