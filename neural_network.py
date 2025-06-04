@@ -118,7 +118,7 @@ def build_neural_network(input_shape):
     
     return model
 
-def train_and_evaluate_model(X, y):
+def train_and_evaluate_model(X, y, trained_weights, selected_features):
     """
     Train and evaluate the neural network model using Stratified K-Fold cross-validation.
     
