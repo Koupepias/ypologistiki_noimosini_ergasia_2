@@ -30,9 +30,124 @@ def create_feature_groups():
         'total_features': 37
     }
 
-def genetic_algorithm_feature_selection(X, y, trained_weights=None, generations=3, population_size=3, mutation_rate=0.1):
+def tournament_selection(population, fitness_scores, num_parents, tournament_size=3):
     """
-    Genetic Algorithm for feature selection with grouping for categorical features.
+    Tournament selection - select individuals through tournaments
+    
+    Args:
+        population: List of Individual objects
+        fitness_scores: List of fitness values for each individual
+        num_parents: Number of parents to select
+        tournament_size: Size of each tournament (default=3)
+    
+    Returns:
+        selected_parents: List of selected Individual objects
+    """
+    selected_parents = []
+    
+    for _ in range(num_parents):
+        # Select random individuals for tournament
+        tournament_indices = random.sample(range(len(population)), 
+                                         min(tournament_size, len(population)))
+        
+        # Find the winner (individual with highest fitness)
+        winner_idx = max(tournament_indices, key=lambda i: fitness_scores[i])
+        selected_parents.append(population[winner_idx])
+    
+    return selected_parents
+
+def uniform_crossover(parent1, parent2, crossover_prob=0.5):
+    """
+    Uniform crossover that respects feature groups
+    
+    Args:
+        parent1, parent2: Parent Individual objects
+        crossover_prob: Probability of exchanging each gene (default=0.5)
+    
+    Returns:
+        child1, child2: Two offspring Individual objects
+    """
+    feature_info = create_feature_groups()
+    
+    child1 = np.array(parent1.chromosome.copy())
+    child2 = np.array(parent2.chromosome.copy())
+    
+    # Uniform crossover for individual features
+    for idx in feature_info['individual']:
+        if random.random() < crossover_prob:
+            # Exchange genes between children
+            child1[idx], child2[idx] = child2[idx], child1[idx]
+    
+    # Handle groups: randomly inherit each group from either parent
+    for group in feature_info['groups']:
+        if random.random() < 0.5:
+            # Child1 gets parent2's group, Child2 gets parent1's group
+            child1[group] = parent2.chromosome[group]
+            child2[group] = parent1.chromosome[group]
+    
+    return Individual(child1), Individual(child2)
+
+def bit_flip_mutation(individual, mutation_rate=0.1):
+    """
+    Bit-flip mutation that respects feature groups
+    
+    Args:
+        individual: Individual object to mutate
+        mutation_rate: Probability of mutation for each gene
+    
+    Returns:
+        mutated_individual: New Individual object with mutations applied
+    """
+    feature_info = create_feature_groups()
+    mutated = np.array(individual.chromosome.copy())
+    
+    # Mutate individual features with bit-flip
+    for idx in feature_info['individual']:
+        if random.random() < mutation_rate:
+            mutated[idx] = 1 - mutated[idx]  # Flip bit: 0→1, 1→0
+    
+    # Mutate groups: either include entire group or exclude it
+    for group in feature_info['groups']:
+        if random.random() < mutation_rate:
+            # Flip entire group
+            current_state = mutated[group[0]]  # Check first element of group
+            new_state = 1 - current_state
+            mutated[group] = new_state  # Set all elements in group to same value
+    
+    return Individual(mutated)
+
+def elitism_selection(population, fitness_scores, elite_size=2):
+    """
+    Select the best individuals for elitism
+    
+    Args:
+        population: List of Individual objects
+        fitness_scores: List of fitness values
+        elite_size: Number of elite individuals to preserve
+    
+    Returns:
+        elite_individuals: List of best Individual objects
+    """
+    if elite_size == 0:
+        return []
+    
+    # Get indices of best individuals
+    elite_indices = sorted(range(len(fitness_scores)), 
+                          key=lambda i: fitness_scores[i], 
+                          reverse=True)[:elite_size]
+    
+    return [population[i] for i in elite_indices]
+
+
+def genetic_algorithm_feature_selection(X, y, trained_weights=None, generations=2, 
+                                       population_size=2, mutation_rate=0.1, 
+                                       elite_size=2, tournament_size=3):
+    """
+    Genetic Algorithm for feature selection with:
+    - Tournament Selection
+    - Uniform Crossover
+    - Bit-flip Mutation
+    - Elitism
     
     Args:
         X (DataFrame): Feature set.
@@ -41,6 +156,8 @@ def genetic_algorithm_feature_selection(X, y, trained_weights=None, generations=
         generations (int): Number of generations to evolve.
         population_size (int): Number of individuals in the population.
         mutation_rate (float): Probability of mutation for each individual.
+        elite_size (int): Number of elite individuals to preserve (1-2 recommended).
+        tournament_size (int): Size of tournament for selection (3 recommended).
         
     Returns:
         best_features (list): List of selected features.
@@ -89,9 +206,7 @@ def genetic_algorithm_feature_selection(X, y, trained_weights=None, generations=
         return population
 
     def fitness(individual, X_data, y_data, trained_weights):
-        """
-        Calculate fitness using masking approach - much faster!
-        """
+        """Calculate fitness using masking approach"""
         selected_features = individual.get_selected_features()
         
         if len(selected_features) == 0:
@@ -103,7 +218,6 @@ def genetic_algorithm_feature_selection(X, y, trained_weights=None, generations=
             
             # Extract accuracy from results dictionary
             accuracy = results['val_accuracy'][0] if results['val_accuracy'] else 0.0
-
         except Exception as e:
             print(f"Error in fitness evaluation: {e}")
             return 0.0
@@ -124,54 +238,11 @@ def genetic_algorithm_feature_selection(X, y, trained_weights=None, generations=
         
         return max(0.0, fitness_score)
 
-    def crossover(parent1, parent2):
-        """Crossover that respects feature groups"""
-        feature_info = create_feature_groups()
-        
-        child1 = np.array(parent1.chromosome.copy())
-        child2 = np.array(parent2.chromosome.copy())
-        
-        # Crossover individual features normally
-        individual_features = feature_info['individual']
-        if len(individual_features) > 1:
-            crossover_point = np.random.randint(1, len(individual_features))
-            
-            # Swap individual features after crossover point
-            temp = child1[individual_features[crossover_point:]]
-            child1[individual_features[crossover_point:]] = child2[individual_features[crossover_point:]]
-            child2[individual_features[crossover_point:]] = temp
-        
-        # Handle groups: randomly inherit each group from either parent
-        for group in feature_info['groups']:
-            if np.random.random() < 0.5:
-                # Child1 gets parent2's group, Child2 gets parent1's group
-                child1[group] = parent2.chromosome[group]
-                child2[group] = parent1.chromosome[group]
-        
-        return Individual(child1), Individual(child2)
-
-    def mutate(individual):
-        """Mutation that respects feature groups"""
-        feature_info = create_feature_groups()
-        mutated = np.array(individual.chromosome.copy())
-        
-        # Mutate individual features normally
-        for idx in feature_info['individual']:
-            if np.random.random() < mutation_rate:
-                mutated[idx] = 1 - mutated[idx]  # Flip bit
-        
-        # Mutate groups: either include entire group or exclude it
-        for group in feature_info['groups']:
-            if np.random.random() < mutation_rate:
-                # Flip entire group
-                current_state = mutated[group[0]]  # Check first element of group
-                new_state = 1 - current_state
-                mutated[group] = new_state  # Set all elements in group to same value
-        
-        return Individual(mutated)
-
-    # Initialize population with group awareness
+    # Initialize population
     population = initialize_population()
+    
+    # Track best fitness over generations
+    best_fitness_history = []
 
     for generation in range(generations):
         print(f"Generation {generation + 1}/{generations}")
@@ -182,56 +253,74 @@ def genetic_algorithm_feature_selection(X, y, trained_weights=None, generations=
             score = fitness(individual, X, y, trained_weights)
             fitness_scores.append(score)
         
+        # Track best fitness
+        current_best_fitness = max(fitness_scores)
+        best_fitness_history.append(current_best_fitness)
+        print(f"  Best fitness: {current_best_fitness:.4f}")
+        
         # Handle case where all fitness scores are zero or negative
         min_fitness = min(fitness_scores)
         if min_fitness <= 0:
-            # Shift all scores to be positive
             fitness_scores = [score - min_fitness + 0.001 for score in fitness_scores]
         
-        # Select individuals for mating pool (roulette wheel selection)
-        total_fitness = sum(fitness_scores)
-        if total_fitness == 0:
-            print("Warning: All individuals have zero fitness")
-            break
-            
-        probabilities = [score / total_fitness for score in fitness_scores]
-        mating_pool = random.choices(population, weights=probabilities, k=population_size)
+        # ELITISM: Preserve best individuals
+        elite_individuals = elitism_selection(population, fitness_scores, elite_size)
+        print(f"  Elite individuals preserved: {len(elite_individuals)}")
+        
+        # Calculate how many new individuals we need to generate
+        new_individuals_needed = population_size - len(elite_individuals)
+        
+        # TOURNAMENT SELECTION: Select parents for reproduction
+        mating_pool = tournament_selection(population, fitness_scores, 
+                                         new_individuals_needed, tournament_size)
         
         # Create next generation
-        next_generation = []
-        for i in range(0, population_size, 2):
-            parent1 = mating_pool[i]
-            parent2 = mating_pool[min(i + 1, population_size - 1)]
+        next_generation = elite_individuals.copy()  # Start with elite individuals
+        
+        # Generate new individuals through crossover and mutation
+        for i in range(0, new_individuals_needed, 2):
+            # Select two parents
+            parent1 = mating_pool[i % len(mating_pool)]
+            parent2 = mating_pool[(i + 1) % len(mating_pool)]
             
-            # Use group-aware crossover and mutation
-            child1, child2 = crossover(parent1, parent2)
-            child1 = mutate(child1)
-            child2 = mutate(child2)
+            # UNIFORM CROSSOVER: Create offspring
+            child1, child2 = uniform_crossover(parent1, parent2)
+            
+            # BIT-FLIP MUTATION: Apply mutation
+            child1 = bit_flip_mutation(child1, mutation_rate)
+            child2 = bit_flip_mutation(child2, mutation_rate)
             
             next_generation.extend([child1, child2])
-            # or
-            # next_generation.append(mutate(child1))
-            # next_generation.append(mutate(child2))
         
-        population = next_generation[:population_size]  # Ensure exact population size
+        # Ensure exact population size
+        population = next_generation[:population_size]
+        
+        # Early stopping if no improvement for several generations
+        if len(best_fitness_history) > 5:
+            recent_improvements = [best_fitness_history[i] - best_fitness_history[i-1] 
+                                 for i in range(-5, 0)]
+            if all(improvement < 0.001 for improvement in recent_improvements):
+                print(f"  Early stopping at generation {generation + 1} (no significant improvement)")
+                break
 
     # Find the best individual in the final population
     fitness_scores = [fitness(individual, X, y, trained_weights) for individual in population]
     best_individual = population[fitness_scores.index(max(fitness_scores))]
     best_features = best_individual.get_selected_features()
 
-    print(f"Best feature subset: {best_features}")
+    print(f"\nBest feature subset: {best_features}")
     
-    # Print which groups were selected - TODO PRINT OUT AFTER SUCCESSFUL DEBUGING
+    # Print which groups were selected
     feature_info = create_feature_groups()
     selected_groups = []
-    if any(best_individual.chromosome[feature_info['groups'][0]]):  # Check ethnicity group
+    if any(best_individual.chromosome[feature_info['groups'][0]]):
         selected_groups.append("Ethnicity")
-    if any(best_individual.chromosome[feature_info['groups'][1]]):  # Check education group
+    if any(best_individual.chromosome[feature_info['groups'][1]]):
         selected_groups.append("EducationLevel")
     
     print(f"Selected categorical groups: {selected_groups}")
     print(f"Total features selected: {len(best_features)} out of {total_features}")
+    print(f"Final best fitness: {max(fitness_scores):.4f}")
     
     return best_features
 
@@ -289,11 +378,20 @@ if __name__ == "__main__":
     
     print(f"Trained weights extracted successfully: {trained_weights is not None}")
     
-    # Part B: Use GA for feature selection with pre-trained weights
+    # Part B: Use GA for feature selection with chosen operators
     print("=" * 50)
     print("PART B: Starting genetic algorithm for feature selection...")
     print("=" * 50)
-    best_features = genetic_algorithm_feature_selection(X, y, trained_weights=trained_weights)
+    
+    best_features = genetic_algorithm_feature_selection(
+        X, y, 
+        trained_weights=trained_weights,
+        generations=2,        # Increased for better results
+        population_size=2,    # Increased for better diversity
+        mutation_rate=0.1,     # 10% mutation rate
+        elite_size=2,          # Preserve top 2 individuals
+        tournament_size=3      # Tournament size of 3
+    )
     
     # Evaluate with selected features
     print("=" * 50)
@@ -304,3 +402,7 @@ if __name__ == "__main__":
     
     print("Neural network evaluation with GA-selected features completed successfully!")
     print(f"Selected {len(best_features)} features out of {X.shape[1]} total features")
+    
+    # Print feature reduction ratio
+    reduction_ratio = (1 - len(best_features) / X.shape[1]) * 100
+    print(f"Feature reduction: {reduction_ratio:.1f}%")
