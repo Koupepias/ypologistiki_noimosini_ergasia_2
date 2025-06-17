@@ -87,45 +87,12 @@ def load_and_preprocess_data():
 
     return X, y
 
-def build_neural_network(input_shape):
-    """
-    Build a neural network model for Alzheimer's disease diagnosis.
-    
-    Args:
-        input_shape (int): The number of features in the input data.
-        
-    Returns:
-        model (Sequential): Compiled Keras model.
-    """
-    model = keras.Sequential([
-    layers.Input(shape=(input_shape,)),
-
-    layers.Dense(76, activation="elu", kernel_regularizer=regularizers.l2(0.001)),  
-    layers.Dense(38, activation="elu", kernel_regularizer=regularizers.l2(0.001)),  
-    layers.Dense(38, activation="elu", kernel_regularizer=regularizers.l2(0.001)), 
-    
-    layers.Dense(1, activation='sigmoid', kernel_regularizer=regularizers.l2(0.001)) 
-])
-
-    model.compile(optimizer=keras.optimizers.SGD(learning_rate=0.001, momentum=0.6),
-                  loss="binary_crossentropy",
-                  metrics=['accuracy', 
-                           'binary_crossentropy', 
-                           'mse',
-                           'precision',
-                           'recall',
-                           'f1_score'
-                           ])
-    
-    return model
-
 def build_neural_network(input_shape, feature_mask=None):
     """
-    Build a neural network model with optional feature masking.
+    Build a neural network model.
     
     Args:
         input_shape (int): The number of features in the input data.
-        feature_mask (array-like): Binary mask for features (1=use, 0=ignore)
         
     Returns:
         model (Sequential): Compiled Keras model.
@@ -133,10 +100,7 @@ def build_neural_network(input_shape, feature_mask=None):
     model = keras.Sequential([
         layers.Input(shape=(input_shape,)),
         
-        # Add masking layer if feature_mask is provided
-        layers.Lambda(lambda x: x * feature_mask if feature_mask is not None else x, 
-                     name='feature_masking') if feature_mask is not None else layers.Lambda(lambda x: x),
-        
+        # Remove the masking layer - we'll handle masking in preprocessing
         layers.Dense(76, activation="elu", kernel_regularizer=regularizers.l2(0.001)),  
         layers.Dense(38, activation="elu", kernel_regularizer=regularizers.l2(0.001)),  
         layers.Dense(38, activation="elu", kernel_regularizer=regularizers.l2(0.001)), 
@@ -149,197 +113,20 @@ def build_neural_network(input_shape, feature_mask=None):
     
     return model
 
-def train_and_evaluate_model(X, y, trained_weights=None):
+def train_and_evaluate_model(X, y, trained_weights=None, selected_features=None):
     """
-    Train and evaluate the neural network model using Stratified K-Fold cross-validation.
+    Train and evaluate the neural network model.
     
     Args:
         X (DataFrame): Feature set.
         y (Series): Target variable.
-        trained_weights (optional): Pre-trained weights to use instead of training from scratch.
-        selected_features (optional): List of selected feature indices.
-        
-    Returns:
-        results (dict): Dictionary containing evaluation metrics and trained weights.
-    """
-    kf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-    
-    # Early Stopping based on validation loss 
-    early_stopping = EarlyStopping(
-        monitor='val_loss',
-        patience=10,
-        min_delta=0.001,
-        restore_best_weights=True,
-        verbose=1,
-        mode='min'
-    )
-
-    input_shape = X.shape[1]  
-
-    # Initialize dictionaries to store results
-    results = {
-        'val_accuracy': [],
-        'val_loss': [],
-        'val_binary_crossentropy': [],
-        'val_mse': [],
-        'val_precision': [],
-        'val_recall': [],
-        'val_f1_score': [],
-        'epochs_trained': [],
-        'train_accuracy': [],
-        'generalization_gap': [],  
-        'all_histories': [],
-        'trained_weights': None,  # To store the best model weights
-        'model': None  # To store the best model
-    }
-
-    fold_accuracies = []
-    fold_losses = []
-    fold_bce = []
-    fold_mse = []
-    fold_precission = []
-    fold_recall = []
-    fold_f1_score = []
-    fold_epochs = []
-    all_fold_histories = []
-    val_scores = []
-    fold_train_acc = []
-
-    trained_model = None  # To store the best model
-    best_val_accuracy = 0
-
-    for fold, (train_index, test_index) in enumerate(kf.split(X, y)):
-        print(f"  TRAINING FOLD {fold + 1}/5")
-        
-        X_train, X_test = X.iloc[train_index], X.iloc[test_index]
-        y_train, y_test = y.iloc[train_index], y.iloc[test_index]
-
-        model = build_neural_network(input_shape)
-        
-        # If pre-trained weights are provided, use them
-        if trained_weights is not None:
-            try:
-                model.set_weights(trained_weights)
-                print("  Using pre-trained weights")
-            except Exception as e:
-                print(f"  Warning: Could not load pre-trained weights: {e}")
-                print("  Training from scratch instead")
-        
-        # Calculate class weights
-        class_counts = np.bincount(y_train.astype(int))
-        total_samples = len(y_train)
-        class_weights = {
-            0: total_samples / (2 * class_counts[0]),
-            1: total_samples / (2 * class_counts[1])
-        }
-
-        history = model.fit(
-            X_train, y_train,
-            epochs=100,
-            batch_size=32,
-            verbose=0,
-            validation_data=(X_test, y_test),
-            class_weight=class_weights,
-            callbacks=[early_stopping]
-        )
-
-        all_fold_histories.append(history.history)
-        val_scores = model.evaluate(X_test, y_test, verbose=0)
-        train_scores = model.evaluate(X_train, y_train, verbose=0)
-        val_loss = val_scores[0]  # loss (from loss function - BCE)
-        val_accuracy = val_scores[1]  
-        val_bce = val_scores[2]  
-        val_mse = val_scores[3]  
-        val_precission = val_scores[4]  
-        val_recall = val_scores[5]
-        val_f1_score = val_scores[6]
-        epochs = len(history.history['loss'])
-
-        # Store individual fold results
-        fold_accuracies.append(val_accuracy)
-        fold_losses.append(val_loss)
-        fold_bce.append(val_bce)
-        fold_mse.append(val_mse)
-        fold_precission.append(val_precission)
-        fold_recall.append(val_recall)
-        fold_f1_score.append(val_f1_score)
-        fold_epochs.append(epochs)
-        fold_train_acc.append(train_scores[1])
-
-        # Keep track of the best model
-        if val_accuracy > best_val_accuracy:
-            best_val_accuracy = val_accuracy
-            trained_model = model
-
-    y_pred = model.predict(X_test, verbose=0)
-    y_pred_classes = (y_pred > 0.5).astype(int)
-    
-    # Calculate average scores across folds
-    avg_accuracy = np.mean(fold_accuracies)
-    avg_loss = np.mean(fold_losses)
-    avg_bce = np.mean(fold_bce)
-    avg_mse = np.mean(fold_mse)
-    avg_precission = np.mean(fold_precission)
-    avg_recall = np.mean(fold_recall)
-    avg_f1_score = np.mean(fold_f1_score)
-    avg_epochs = np.mean(fold_epochs)
-    avg_train_acc = np.mean(fold_train_acc)
-
-    # Store results
-    results['val_accuracy'].append(avg_accuracy)
-    results['val_loss'].append(avg_loss)
-    results['val_binary_crossentropy'].append(avg_bce)
-    results['val_mse'].append(avg_mse)
-    results['val_precision'].append(avg_precission)
-    results['val_recall'].append(avg_recall)
-    results['val_f1_score'].append(avg_f1_score)
-    results['epochs_trained'].append(avg_epochs)
-    results['all_histories'].append(all_fold_histories)
-    results['train_accuracy'].append(avg_train_acc)
-
-    generalization_gap = avg_train_acc - avg_accuracy
-    results['generalization_gap'].append(generalization_gap)
-
-    if trained_model is not None:
-        results['trained_weights'] = trained_model.get_weights()
-        results['model'] = trained_model
-
-    print(f"RESULTS: Accuracy: {avg_accuracy:.4f}, Loss: {avg_loss:.4f}, Avg Epochs: {avg_epochs:.1f}, Precision: {avg_precission:.4f}, Recall: {avg_recall:.4f}, F1 Score: {avg_f1_score:.4f}, Generalization Gap: {generalization_gap:.4f}")
-
-    output_dir = create_output_directory()
-
-    save_results_to_csv(results, output_dir)
-    plot_convergence_graphs(results, y_pred_classes, y_test, output_dir)
-
-    # Add trained weights to results
-    if trained_model is not None:
-        results['trained_weights'] = trained_model.get_weights()
-        results['model'] = trained_model
-
-    return results
-
-def train_and_evaluate_model(X, y, trained_weights=None, selected_features=None):
-    """
-    Train and evaluate the neural network model using masking for feature selection.
-    
-    Args:
-        X (DataFrame): Feature set (always full feature set).
-        y (Series): Target variable.
         trained_weights (optional): Pre-trained weights to use.
-        selected_features (optional): List of selected feature indices for masking.
+        selected_features (optional): Not used in this version.
         
     Returns:
         results (dict): Dictionary containing evaluation metrics and trained weights.
     """
     kf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-    
-    # Create feature mask
-    feature_mask = None
-    if selected_features is not None:
-        feature_mask = np.zeros(X.shape[1], dtype=np.float32)
-        feature_mask[selected_features] = 1.0
-        feature_mask = tf.constant(feature_mask)
-        print(f"  Using feature mask: {len(selected_features)}/{X.shape[1]} features selected")
     
     # Early Stopping
     early_stopping = EarlyStopping(
@@ -351,7 +138,7 @@ def train_and_evaluate_model(X, y, trained_weights=None, selected_features=None)
         mode='min'
     )
 
-    input_shape = X.shape[1]  # Always use full input shape
+    input_shape = X.shape[1]
 
     # Initialize results dictionary
     results = {
@@ -387,18 +174,17 @@ def train_and_evaluate_model(X, y, trained_weights=None, selected_features=None)
     for fold, (train_index, test_index) in enumerate(kf.split(X, y)):
         print(f"  TRAINING FOLD {fold + 1}/5")
         
-        # Use full feature set but apply masking
         X_train, X_test = X.iloc[train_index], X.iloc[test_index]
         y_train, y_test = y.iloc[train_index], y.iloc[test_index]
 
-        # Build model with masking
-        model = build_neural_network(input_shape, feature_mask)
+        # Build standard model without masking
+        model = build_neural_network(input_shape)
         
-        # Load pre-trained weights (now compatible since architecture is identical)
+        # Load pre-trained weights if provided
         if trained_weights is not None:
             try:
                 model.set_weights(trained_weights)
-                print("  Successfully loaded pre-trained weights with masking")
+                print("  Successfully loaded pre-trained weights")
             except Exception as e:
                 print(f"  Warning: Could not load pre-trained weights: {e}")
                 print("  Training from scratch instead")
@@ -444,7 +230,8 @@ def train_and_evaluate_model(X, y, trained_weights=None, selected_features=None)
             best_val_accuracy = val_accuracy
             trained_model = model
 
-    y_pred = model.predict(X_test, verbose=0)
+    # Use the last test set for final predictions
+    y_pred = trained_model.predict(X_test, verbose=0)
     y_pred_classes = (y_pred > 0.5).astype(int)
     
     # Calculate average scores across folds
@@ -473,6 +260,7 @@ def train_and_evaluate_model(X, y, trained_weights=None, selected_features=None)
     generalization_gap = avg_train_acc - avg_accuracy
     results['generalization_gap'].append(generalization_gap)
 
+    # Store the best model and its weights
     if trained_model is not None:
         results['trained_weights'] = trained_model.get_weights()
         results['model'] = trained_model
@@ -480,14 +268,8 @@ def train_and_evaluate_model(X, y, trained_weights=None, selected_features=None)
     print(f"RESULTS: Accuracy: {avg_accuracy:.4f}, Loss: {avg_loss:.4f}, Avg Epochs: {avg_epochs:.1f}, Precision: {avg_precission:.4f}, Recall: {avg_recall:.4f}, F1 Score: {avg_f1_score:.4f}, Generalization Gap: {generalization_gap:.4f}")
 
     output_dir = create_output_directory()
-
     save_results_to_csv(results, output_dir)
     plot_convergence_graphs(results, y_pred_classes, y_test, output_dir)
-
-    # Add trained weights to results
-    if trained_model is not None:
-        results['trained_weights'] = trained_model.get_weights()
-        results['model'] = trained_model
 
     return results
 
@@ -546,6 +328,7 @@ def plot_convergence_graphs(results, y_pred_classes, y_test, output_dir):
         plt.legend(['Train', 'Validation'], loc='upper right')
         plt.tight_layout()
         plt.savefig(f'{output_dir}/training_history.png')
+        plt.close()
     
     # Create and save confusion matrix
     plt.figure(figsize=(8, 6))
@@ -558,6 +341,7 @@ def plot_convergence_graphs(results, y_pred_classes, y_test, output_dir):
     plt.xlabel('Predicted Label')
     plt.tight_layout()
     plt.savefig(f'{output_dir}/confusion_matrix.png')
+    plt.close()
 
     return
 
