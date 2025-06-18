@@ -109,18 +109,22 @@ def bit_flip_mutation(individual, mutation_rate=0.1):
     feature_info = create_feature_groups()
     mutated = np.array(individual.chromosome.copy())
     
+    random_num= random.random()
+    
     # Mutate individual features with bit-flip
     for idx in feature_info['individual']:
-        if random.random() < mutation_rate:
+        if random_num < mutation_rate:
             mutated[idx] = 1 - mutated[idx]  # Flip bit: 0→1, 1→0
     
     # Mutate groups: either include entire group or exclude it
     for group in feature_info['groups']:
-        if random.random() < mutation_rate:
-            # Flip entire group
-            current_state = mutated[group[0]]  # Check first element of group
-            new_state = 1 - current_state
-            mutated[group] = new_state  # Set all elements in group to same value
+        if random_num < mutation_rate:
+            # More conservative group mutation
+            if np.all(mutated[group] == 0):  # Group is off
+                mutated[group] = 1  # Turn on
+            else:  # Group is on
+                if random.random() < 0.5:  # 50% chance to turn off
+                    mutated[group] = 0
     
     return Individual(mutated)
 
@@ -248,6 +252,7 @@ def genetic_algorithm(X, y, trained_weights=None,
     def fitness(individual, X_data, y_data, trained_model, test_indices=None):
         """
         Fast fitness evaluation using pre-trained model with feature masking
+        Now using ratio-based penalty approach
         
         Args:
             individual: Individual with chromosome (binary feature selection)
@@ -290,19 +295,30 @@ def genetic_algorithm(X, y, trained_weights=None,
             y_pred_classes = (predictions > 0.5).astype(int).flatten()
             accuracy = np.mean(y_pred_classes == y_eval.values)
             
-            # Feature count penalty
-            num_features = len(selected_features)
-            feature_penalty = num_features / X_data.shape[1]
+            # RATIO-BASED PENALTY APPROACH
+            num_active_features = len(selected_features)
+            total_features = X_data.shape[1]
             
-            # Combined fitness
-            alpha = 0.8
-            beta = 0.2
-            fitness_score = alpha * accuracy - beta * feature_penalty
+            # Calculate feature ratio penalty
+            feature_ratio = num_active_features / total_features
+            penalty_weight = 0.2  # You can adjust this (0.1-0.4 range recommended)
+            penalty = feature_ratio * penalty_weight
+            
+            # Weight for accuracy (can be adjusted)
+            accuracy_weight = 1.0
+            
+            # Combined fitness with ratio-based penalty
+            fitness_score = accuracy_weight * accuracy - penalty
+            
+            # Optional: Add minimum accuracy protection
+            min_acceptable_accuracy = 0.5  # Below random chance protection
+            if accuracy < min_acceptable_accuracy:
+                fitness_score = accuracy * 0.1  # Heavy penalty for poor accuracy
             
             return max(0.0, fitness_score)
             
         except Exception as e:
-            print(f"Error in fast fitness evaluation: {e}")
+            print(f"Error in fitness evaluation: {e}")
             return 0.0
 
     # Initialize population and tracking variables
@@ -1154,9 +1170,9 @@ if __name__ == "__main__":
     # Define GA parameters including crossover rate
     ga_parameters = {
         'max_generations': 100,
-        'population_size': 20,
-        'mutation_rate': 0.00,
-        'crossover_rate': 0.6,      
+        'population_size': 200,
+        'mutation_rate': 0.01,
+        'crossover_rate': 0.9,      
         # 'elite_size': 2,
         'tournament_size': 3,
         'no_improvement_generations': 10,
@@ -1166,7 +1182,7 @@ if __name__ == "__main__":
     # Run 10 independent experiments
     experiment_results = run_multiple_ga_experiments(
         X, y, trained_weights, 
-        num_runs=10,
+        num_runs=2,
         **ga_parameters
     )
     
@@ -1174,7 +1190,7 @@ if __name__ == "__main__":
     stats = analyze_and_report_results(experiment_results)
     
     # parameters selection row
-    AA=1
+    AA=9
     # Save results
     folder = save_results_to_files(experiment_results, "ga_with_crossover_rate", AA)
     
@@ -1218,24 +1234,29 @@ if __name__ == "__main__":
     print("\n" + "="*60)
     print("COMPARISON: FULL FEATURES vs. SELECTED FEATURES")
     print("="*60)
-    print(f"Full features ({X.shape[1]}): Accuracy = {results_part_a['accuracy']:.4f}")
-    print(f"Selected features ({len(best_features)}): Accuracy = {results_selected['accuracy']:.4f}")
+    
+    # Fix: Access the first (and only) element of the lists
+    full_accuracy = results_part_a['val_accuracy'][0] if isinstance(results_part_a['val_accuracy'], list) else results_part_a['val_accuracy']
+    selected_accuracy = results_selected['val_accuracy'][0] if isinstance(results_selected['val_accuracy'], list) else results_selected['val_accuracy']
+    
+    print(f"Full features ({X.shape[1]}): Accuracy = {full_accuracy:.4f}")
+    print(f"Selected features ({len(best_features)}): Accuracy = {selected_accuracy:.4f}")
     print(f"Feature reduction: {(1 - len(best_features)/X.shape[1])*100:.1f}%")
     
     # Save comparison results
     comparison = {
         "full_features": {
             "count": X.shape[1],
-            "accuracy": float(results_part_a['accuracy']),
+            "accuracy": float(full_accuracy),
         },
         "selected_features": {
             "count": len(best_features),
-            "accuracy": float(results_selected['accuracy']),
+            "accuracy": float(selected_accuracy),
             "feature_indices": best_features,
             "feature_names": best_feature_names
         },
         "improvement": {
-            "accuracy_change": float(results_selected['accuracy'] - results_part_a['accuracy']),
+            "accuracy_change": float(selected_accuracy - full_accuracy),
             "feature_reduction_percent": float((1 - len(best_features)/X.shape[1])*100)
         }
     }
@@ -1249,7 +1270,7 @@ if __name__ == "__main__":
     plt.figure(figsize=(10, 6))
     
     models = ['Full Features', 'Selected Features']
-    accuracies = [results_part_a['accuracy'], results_selected['accuracy']]
+    accuracies = [full_accuracy, selected_accuracy]
     feature_counts = [X.shape[1], len(best_features)]
     
     # Plot accuracy bars
